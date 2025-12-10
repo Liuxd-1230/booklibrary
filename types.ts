@@ -39,10 +39,16 @@ export enum AppView {
   READER = 'READER',
 }
 
+export type AIProvider = 'gemini' | 'deepseek';
+
 export interface ReaderSettings {
   theme: 'light' | 'sepia' | 'dark';
   fontSize: number;
   fontFamily: 'serif' | 'sans';
   lineHeight: number;
   pdfScale: number;
+  // AI Settings
+  aiProvider: AIProvider;
+  aiApiKey?: string; // Optional custom key for DeepSeek
+  aiModel?: string; // Optional custom model name
 }

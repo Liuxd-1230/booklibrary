@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Book, Bookmark, ReaderSettings, TocItem } from '../types';
+import { Book, Bookmark, ReaderSettings, TocItem, AIProvider } from '../types';
 import { ChevronLeftIcon, BookmarkIcon, SparklesIcon, XIcon, SettingsIcon, ListIcon } from './Icons';
 import { explainTextWithAI } from '../services/geminiService';
 import { pdfjsLib } from '../services/bookParser';
@@ -13,27 +13,31 @@ interface ReaderProps {
   onRemoveBookmark: (bookmarkId: string) => void;
 }
 
-// Individual PDF Page Component for Lazy Loading
+// Individual PDF Page Component with Lazy Loading, Error Handling, High DPI Support, and Debounce
 const PdfPage = ({ pageNumber, pdf, scale, id }: { pageNumber: number, pdf: any, scale: number, id?: string }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const renderTaskRef = useRef<any>(null); // Track active render task
+  const renderTaskRef = useRef<any>(null);
+  
   const [inView, setInView] = useState(false);
-  const [rendered, setRendered] = useState(false);
+  const [shouldLoad, setShouldLoad] = useState(false); // Debounced trigger
+  const [status, setStatus] = useState<'init' | 'loading' | 'success' | 'error'>('init');
+  const [retryCount, setRetryCount] = useState(0);
+  const [pageDimensions, setPageDimensions] = useState<{width: number, height: number} | null>(null);
 
-  // Intersection Observer to detect when page is visible
+  // Intersection Observer
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
             setInView(true);
-            observer.disconnect();
+            observer.disconnect(); // Once in view, we commit to tracking it via the debounce logic
           }
         });
       },
-      { rootMargin: '50% 0px' } // Preload when within 50% of viewport height
+      { rootMargin: '50% 0px' } // Reduced preload margin slightly to favor debounce
     );
 
     if (containerRef.current) {
@@ -41,95 +45,100 @@ const PdfPage = ({ pageNumber, pdf, scale, id }: { pageNumber: number, pdf: any,
     }
 
     return () => observer.disconnect();
-  }, []);
+  }, [retryCount]);
 
-  // Handle rendering with cancellation support
+  // Debounce Logic: Only load if the page stays in view (or was in view) for >200ms
   useEffect(() => {
-    if (!inView || !pdf || !canvasRef.current || !textLayerRef.current) return;
+    let timer: any;
+    if (inView && !shouldLoad) {
+      // Small delay to prevent loading pages during fast scrolling
+      timer = setTimeout(() => {
+        setShouldLoad(true);
+      }, 200); 
+    }
+    return () => clearTimeout(timer);
+  }, [inView, shouldLoad]);
+
+  // Render Logic
+  useEffect(() => {
+    if (!shouldLoad || !pdf || !canvasRef.current || !textLayerRef.current) return;
 
     let isCancelled = false;
 
     const renderPage = async () => {
-      // If a task is already running, cancel it and wait for it to finish
+      // If render task exists, it means we might be retrying or re-scaling
       if (renderTaskRef.current) {
         try {
           await renderTaskRef.current.cancel();
-        } catch (error) {
-          // Ignore cancellation errors
-        } finally {
-            renderTaskRef.current = null;
-        }
+        } catch (e) { /* ignore cancel error */ }
       }
+
+      setStatus('loading');
 
       try {
         const page = await pdf.getPage(pageNumber);
-        
         if (isCancelled) return;
 
         const viewport = page.getViewport({ scale });
-        
+        setPageDimensions({ width: viewport.width, height: viewport.height });
+
+        // High DPI Support
+        const dpr = window.devicePixelRatio || 1;
         const canvas = canvasRef.current!;
         const context = canvas.getContext('2d');
-        
-        if (!context) return;
 
-        // Reset canvas dimensions to clear it and prepare for new render
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
+        if (!context) throw new Error("Canvas context unavailable");
+
+        // Set dimensions for high resolution
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
         
-        // Render graphics
+        // Style dimensions match the CSS viewport
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
         const renderContext = {
           canvasContext: context,
-          viewport: viewport
+          viewport: viewport,
+          transform: [dpr, 0, 0, dpr, 0, 0] // Scale transform for context
         };
-        
-        if (isCancelled) return;
 
-        try {
-            renderTaskRef.current = page.render(renderContext);
-            await renderTaskRef.current.promise;
-        } catch (renderErr: any) {
-            if (renderErr.name === 'RenderingCancelled' || renderErr.message?.includes('cancelled')) {
-                return;
-            }
-            throw renderErr;
-        }
+        renderTaskRef.current = page.render(renderContext);
+        await renderTaskRef.current.promise;
 
         if (isCancelled) return;
 
-        // Render text layer
+        // Text Layer
         const textContent = await page.getTextContent();
         if (isCancelled) return;
 
-        textLayerRef.current!.innerHTML = ''; 
-        textLayerRef.current!.style.setProperty('--scale-factor', `${scale}`);
-        
-        try {
-            await pdfjsLib.renderTextLayer({
-                textContentSource: textContent,
-                container: textLayerRef.current!,
-                viewport: viewport,
-                textDivs: []
-            }).promise;
-        } catch (textErr) {
-            console.warn("Text layer render warning:", textErr);
-        }
+        const textLayer = textLayerRef.current!;
+        textLayer.innerHTML = '';
+        textLayer.style.width = `${Math.floor(viewport.width)}px`;
+        textLayer.style.height = `${Math.floor(viewport.height)}px`;
+        textLayer.style.setProperty('--scale-factor', `${scale}`);
+
+        await pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: textLayer,
+          viewport: viewport,
+          textDivs: []
+        }).promise;
 
         if (!isCancelled) {
-          setRendered(true);
+          setStatus('success');
         }
+
       } catch (err: any) {
         if (err.name !== 'RenderingCancelled' && !err.message?.includes('cancelled')) {
           console.error(`Error rendering page ${pageNumber}`, err);
+          if (!isCancelled) setStatus('error');
         }
       } finally {
-        if (!isCancelled) {
-             renderTaskRef.current = null;
-        }
+         renderTaskRef.current = null;
       }
     };
 
-    setRendered(false);
     renderPage();
 
     return () => {
@@ -138,19 +147,45 @@ const PdfPage = ({ pageNumber, pdf, scale, id }: { pageNumber: number, pdf: any,
         renderTaskRef.current.cancel();
       }
     };
-  }, [inView, pdf, pageNumber, scale]);
+  }, [shouldLoad, pdf, pageNumber, scale, retryCount]);
+
+  const handleRetry = () => {
+    setStatus('init');
+    setRetryCount(c => c + 1);
+  };
 
   return (
     <div 
       id={id}
       ref={containerRef} 
-      className="relative mb-6 shadow-lg rounded-sm bg-white mx-auto transition-opacity duration-500"
+      className="relative mb-6 mx-auto bg-white shadow-sm transition-all duration-300"
       style={{ 
-        minHeight: rendered ? 'auto' : '800px',
-        width: rendered ? 'fit-content' : '100%', 
-        opacity: rendered ? 1 : 0.5 
+        width: pageDimensions ? pageDimensions.width : '100%',
+        height: pageDimensions ? pageDimensions.height : (scale * 800), // Approximate height placeholder
+        minHeight: '200px',
+        maxWidth: '100%'
       }}
     >
+      {/* Loading State */}
+      {status === 'loading' && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+          <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      )}
+
+      {/* Error State */}
+      {status === 'error' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-red-50 z-10 p-4 text-center">
+          <p className="text-red-500 text-sm font-medium mb-2">加载失败</p>
+          <button 
+            onClick={handleRetry}
+            className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-lg shadow-sm text-xs active:scale-95 transition-transform"
+          >
+            重试
+          </button>
+        </div>
+      )}
+
       <canvas ref={canvasRef} className="block" />
       <div ref={textLayerRef} className="textLayer" />
     </div>
@@ -181,7 +216,9 @@ const Reader: React.FC<ReaderProps> = ({
     fontSize: 18,
     fontFamily: 'serif',
     lineHeight: 1.6,
-    pdfScale: 1.5,
+    pdfScale: 1.0,
+    aiProvider: 'gemini',
+    aiApiKey: '',
   });
 
   const [inputPage, setInputPage] = useState("1");
@@ -203,6 +240,21 @@ const Reader: React.FC<ReaderProps> = ({
           const pdf = await loadingTask.promise;
           setPdfDocument(pdf);
           setNumPages(pdf.numPages);
+
+          // Auto-Fit Logic
+          try {
+             const page = await pdf.getPage(1);
+             const viewport = page.getViewport({ scale: 1 });
+             const containerWidth = window.innerWidth;
+             const padding = 32;
+             const availableWidth = containerWidth - padding;
+             let fitScale = availableWidth / viewport.width;
+             if (fitScale > 2.5) fitScale = 2.5; 
+             setSettings(prev => ({ ...prev, pdfScale: fitScale }));
+          } catch (e) {
+             console.warn("Failed to calculate auto-fit scale", e);
+          }
+
         } catch (error) {
           console.error("Error loading PDF in reader:", error);
         }
@@ -254,21 +306,25 @@ const Reader: React.FC<ReaderProps> = ({
     setSelection(null); 
     window.getSelection()?.removeAllRanges(); 
 
-    const explanation = await explainTextWithAI(selection.text);
+    const explanation = await explainTextWithAI(
+      selection.text, 
+      undefined, 
+      {
+        provider: settings.aiProvider,
+        apiKey: settings.aiApiKey
+      }
+    );
     setAiExplanation(explanation);
     setAiLoading(false);
   };
 
   const handleBookmark = () => {
-    // For bookmarks, we use the current progress percentage.
-    // This works for both text and PDF as a simple restoration point.
     const excerpt = book.title + " - " + Math.round(book.progress) + "%";
     onAddBookmark(book.id, excerpt, book.progress);
   };
 
   const jumpToPage = (page: number) => {
-    if (book.type !== 'pdf') return; // Page jump only for PDF
-    
+    if (book.type !== 'pdf') return;
     const pageEl = document.getElementById(`page-${page}`);
     if (pageEl) {
       pageEl.scrollIntoView({ behavior: 'smooth' });
@@ -286,7 +342,6 @@ const Reader: React.FC<ReaderProps> = ({
     setShowMenu(false);
   };
 
-  // Get current styles based on theme
   const getThemeStyles = () => {
     switch (settings.theme) {
       case 'sepia': return 'bg-[#F4ECD8] text-[#5B4636]';
@@ -300,8 +355,8 @@ const Reader: React.FC<ReaderProps> = ({
       
       {/* Header */}
       <div className={`
-        fixed top-0 left-0 right-0 z-40 p-4 transition-transform duration-300
-        ${showControls ? 'translate-y-0' : '-translate-y-full'}
+        fixed top-0 left-0 right-0 z-40 p-4 transition-all duration-300 ease-in-out
+        ${showControls ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'}
       `}>
         <div className="glass-panel rounded-full px-4 py-3 flex justify-between items-center shadow-sm">
           <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-gray-100/50">
@@ -356,13 +411,12 @@ const Reader: React.FC<ReaderProps> = ({
                            <button 
                               onClick={() => item.page && jumpToPage(item.page)}
                               className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-black/5 rounded-lg truncate"
-                              disabled={!item.page} // Disable if no page (e.g. text header only)
+                              disabled={!item.page} 
                               style={{ opacity: item.page ? 1 : 0.6 }}
                             >
                               {item.label}
                               {item.page && <span className="float-right text-gray-400 text-xs">p. {item.page}</span>}
                            </button>
-                           {/* Simplified nested render for 1 level deep */}
                            {item.children?.map((child, j) => (
                              <button 
                                 key={`${i}-${j}`}
@@ -410,9 +464,40 @@ const Reader: React.FC<ReaderProps> = ({
 
         {/* Settings Popover */}
         {showSettings && (
-          <div className="absolute top-20 right-4 w-72 glass-panel rounded-2xl p-4 shadow-xl flex flex-col gap-5 animate-in fade-in slide-in-from-top-2 z-50 text-gray-800">
+          <div className="absolute top-20 right-4 w-80 glass-panel rounded-2xl p-4 shadow-xl flex flex-col gap-4 animate-in fade-in slide-in-from-top-2 z-50 text-gray-800 max-h-[70vh] overflow-y-auto">
              
-             {/* Font Size / Zoom */}
+             {/* Section: AI Settings */}
+             <div className="flex flex-col gap-2 border-b border-gray-200/50 pb-4">
+                 <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">AI 模型</span>
+                 <div className="flex bg-gray-200/50 rounded-lg p-1 text-xs font-medium">
+                    <button 
+                        onClick={() => setSettings(s => ({...s, aiProvider: 'gemini'}))}
+                        className={`flex-1 px-3 py-1.5 rounded ${settings.aiProvider === 'gemini' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}
+                    >
+                        Gemini
+                    </button>
+                    <button 
+                        onClick={() => setSettings(s => ({...s, aiProvider: 'deepseek'}))}
+                        className={`flex-1 px-3 py-1.5 rounded ${settings.aiProvider === 'deepseek' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}
+                    >
+                        DeepSeek
+                    </button>
+                 </div>
+                 {settings.aiProvider === 'deepseek' && (
+                    <input 
+                      type="password"
+                      placeholder="输入 DeepSeek API Key"
+                      value={settings.aiApiKey || ''}
+                      onChange={(e) => setSettings(s => ({...s, aiApiKey: e.target.value}))}
+                      className="w-full mt-1 px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                 )}
+                 {settings.aiProvider === 'deepseek' && (
+                    <p className="text-[10px] text-gray-400">注意: 浏览器端直接调用 DeepSeek 可能受 CORS 限制。</p>
+                 )}
+             </div>
+
+             {/* Section: Display */}
              <div className="flex justify-between items-center">
                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                  {book.type === 'pdf' ? '缩放' : '字号'}
@@ -420,14 +505,14 @@ const Reader: React.FC<ReaderProps> = ({
                <div className="flex items-center gap-1 bg-gray-200/50 rounded-lg p-1">
                  <button 
                    onClick={() => book.type === 'pdf' 
-                      ? setSettings(s => ({...s, pdfScale: Math.max(0.5, s.pdfScale - 0.25)})) 
+                      ? setSettings(s => ({...s, pdfScale: Math.max(0.1, s.pdfScale - 0.1)})) 
                       : setSettings(s => ({...s, fontSize: Math.max(12, s.fontSize - 2)}))
                    } 
                    className="w-10 h-8 flex items-center justify-center text-sm font-bold text-gray-700 hover:bg-white/50 rounded"
                  >A-</button>
                  <button 
                    onClick={() => book.type === 'pdf' 
-                      ? setSettings(s => ({...s, pdfScale: Math.min(3.0, s.pdfScale + 0.25)})) 
+                      ? setSettings(s => ({...s, pdfScale: Math.min(3.0, s.pdfScale + 0.1)})) 
                       : setSettings(s => ({...s, fontSize: Math.min(32, s.fontSize + 2)}))
                    } 
                    className="w-10 h-8 flex items-center justify-center text-lg font-bold text-gray-700 hover:bg-white/50 rounded"
@@ -435,7 +520,6 @@ const Reader: React.FC<ReaderProps> = ({
                </div>
              </div>
 
-             {/* Theme */}
              <div className="flex justify-between items-center">
                 <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">主题</span>
                 <div className="flex gap-2">
@@ -454,7 +538,6 @@ const Reader: React.FC<ReaderProps> = ({
                 </div>
              </div>
              
-             {/* Font Family (Text Only) */}
              {book.type !== 'pdf' && (
                  <div className="flex justify-between items-center">
                     <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">字体</span>
@@ -475,7 +558,6 @@ const Reader: React.FC<ReaderProps> = ({
                  </div>
              )}
 
-             {/* Page Jump (PDF Only) */}
              {book.type === 'pdf' && (
                 <div className="pt-2 border-t border-gray-200/50">
                     <div className="flex items-center gap-2">
@@ -567,8 +649,8 @@ const Reader: React.FC<ReaderProps> = ({
 
       {/* Footer / Progress */}
       <div className={`
-        fixed bottom-0 left-0 right-0 p-6 z-40 transition-transform duration-300 pointer-events-none
-        ${showControls ? 'translate-y-0' : 'translate-y-full'}
+        fixed bottom-0 left-0 right-0 p-6 z-40 transition-all duration-300 ease-in-out pointer-events-none
+        ${showControls ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}
       `}>
         <div className="text-center text-xs opacity-40 font-medium tracking-widest mb-2 shadow-sm mix-blend-difference text-white">
           {Math.round(book.progress)}% 已读
@@ -594,7 +676,7 @@ const Reader: React.FC<ReaderProps> = ({
                     <div className="p-2 bg-blue-100 rounded-full">
                        <SparklesIcon className="w-5 h-5 text-blue-600" />
                     </div>
-                    <h3 className="text-lg font-bold text-gray-900">AI 解读</h3>
+                    <h3 className="text-lg font-bold text-gray-900">AI 解读 ({settings.aiProvider === 'deepseek' ? 'DeepSeek' : 'Gemini'})</h3>
                   </div>
                   <button 
                     onClick={() => setAiPanelOpen(false)}
