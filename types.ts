@@ -1,7 +1,8 @@
 export interface TocItem {
   label: string;
   page?: number; // For PDF
-  position?: number; // For Text (optional, if we support text ToC later)
+  href?: string; // For EPUB (e.g. "chapter1.html#section2")
+  position?: number; // For Text (optional)
   children?: TocItem[];
 }
 
@@ -9,10 +10,11 @@ export interface Book {
   id: string;
   title: string;
   author: string;
-  content: string; // Plain text content for text books, or description/preview for PDFs
+  content: string; // Plain text for 'text', HTML for 'epub', description for 'pdf'
   pdfData?: ArrayBuffer; // Binary data for PDF rendering
-  type: 'text' | 'pdf';
+  type: 'text' | 'pdf' | 'epub';
   coverColor: string;
+  coverImage?: string; // Base64 encoded image
   progress: number; // 0 to 100
   lastRead: number; // Timestamp
   category: string; // AI Assigned Category
@@ -23,7 +25,7 @@ export interface Bookmark {
   id: string;
   bookId: string;
   excerpt: string;
-  position: number; // PDF: Page Number, Text: Scroll Percentage (0-100)
+  position: number; // PDF: Page Number, Text/Epub: Scroll Percentage (0-100)
   note?: string;
   createdAt: number;
 }
@@ -42,13 +44,14 @@ export enum AppView {
 export type AIProvider = 'gemini' | 'deepseek';
 
 export interface ReaderSettings {
-  theme: 'light' | 'sepia' | 'dark';
+  theme: 'light' | 'sepia' | 'dark' | 'eye-care';
   fontSize: number;
   fontFamily: 'serif' | 'sans';
   lineHeight: number;
   pdfScale: number;
-  // AI Settings
+  bionicReading: boolean;
   aiProvider: AIProvider;
-  aiApiKey?: string; // Optional custom key for DeepSeek
-  aiModel?: string; // Optional custom model name
+  aiApiKey?: string;
+  aiModel?: string;
+  focusMode: boolean;
 }

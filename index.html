@@ -5,20 +5,80 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Lumina Reader</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#f2f2f7" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
     <style>
+      :root {
+        --ios-ease: cubic-bezier(0.32, 0.72, 0, 1);
+      }
+
+      /* Theme Variables Definition */
+      .theme-light {
+        --bg-color: #F2F2F7;
+        --text-color: #1C1C1E;
+        /* Increased opacity for higher contrast "Bento" look */
+        --glass-bg: rgba(255, 255, 255, 0.85); 
+        --glass-border: rgba(255, 255, 255, 0.6);
+        --menu-active: rgba(0, 0, 0, 0.05);
+        --menu-hover: rgba(0, 0, 0, 0.03);
+        --shadow-color: rgba(0, 0, 0, 0.12);
+      }
+
+      .theme-sepia {
+        --bg-color: #F8F1E3;
+        --text-color: #5B4636;
+        --glass-bg: rgba(248, 241, 227, 0.9);
+        --glass-border: rgba(91, 70, 54, 0.15);
+        --menu-active: rgba(91, 70, 54, 0.1);
+        --menu-hover: rgba(91, 70, 54, 0.05);
+        --shadow-color: rgba(91, 70, 54, 0.1);
+      }
+
+      .theme-eye-care {
+        --bg-color: #C7EDCC;
+        --text-color: #2E4033;
+        --glass-bg: rgba(199, 237, 204, 0.9);
+        --glass-border: rgba(46, 64, 51, 0.15);
+        --menu-active: rgba(46, 64, 51, 0.1);
+        --menu-hover: rgba(46, 64, 51, 0.05);
+        --shadow-color: rgba(46, 64, 51, 0.1);
+      }
+
+      .theme-dark {
+        --bg-color: #000000;
+        --text-color: #D1D5DB;
+        --glass-bg: rgba(30, 30, 30, 0.8);
+        --glass-border: rgba(255, 255, 255, 0.15);
+        --menu-active: rgba(255, 255, 255, 0.1);
+        --menu-hover: rgba(255, 255, 255, 0.05);
+        --shadow-color: rgba(0, 0, 0, 0.5);
+      }
+
       body {
         font-family: 'Inter', sans-serif;
-        background-color: #f2f2f7; /* iOS Light Gray Base */
+        background-color: var(--bg-color, #F2F2F7);
+        color: var(--text-color, #1C1C1E);
         -webkit-font-smoothing: antialiased;
-        overscroll-behavior-y: none; /* Prevent bounce on pull-to-refresh effect */
+        overscroll-behavior-y: none;
+        transition: background-color 0.5s var(--ios-ease), color 0.5s var(--ios-ease);
+        user-select: none;
+        -webkit-user-select: none;
       }
+
+      /* Explicitly allow selection for reader content */
+      .allow-select {
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+
       .font-serif {
         font-family: 'Lora', serif;
       }
-      /* Custom Scrollbar hide */
+
       .no-scrollbar::-webkit-scrollbar {
         display: none;
       }
@@ -26,21 +86,69 @@
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
-      .glass-panel {
-        background: rgba(255, 255, 255, 0.65);
-        backdrop-filter: blur(25px) saturate(180%);
-        -webkit-backdrop-filter: blur(25px) saturate(180%);
-        border: 1px solid rgba(255, 255, 255, 0.4);
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+
+      /* Highlight Style */
+      .highlight-fluorescent {
+        background-color: #fff700;
+        color: #000;
+        border-radius: 2px;
+        box-shadow: 0 1px 2px rgba(255, 247, 0, 0.3);
+        mix-blend-mode: multiply;
       }
-      .glass-panel-dark {
-        background: rgba(30, 30, 30, 0.65);
-        backdrop-filter: blur(25px) saturate(180%);
-        -webkit-backdrop-filter: blur(25px) saturate(180%);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+      .theme-dark .highlight-fluorescent {
+        background-color: rgba(255, 247, 0, 0.4);
+        color: inherit;
+        mix-blend-mode: normal;
       }
-      /* PDF Text Layer Styles - Critical for selection */
+
+      /* Heavy Frosted Glass for Menus (Reader Header/Footer) */
+      .glass-menu {
+        background: var(--glass-bg);
+        /* Heavy blur to obscure text underneath */
+        backdrop-filter: blur(50px) saturate(180%);
+        -webkit-backdrop-filter: blur(50px) saturate(180%);
+        border-bottom: 0.5px solid var(--glass-border);
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
+      }
+
+      /* Adaptive Glass Panel (Bento Box / Folders) */
+      .glass-panel-adaptive {
+        background: var(--glass-bg);
+        backdrop-filter: blur(40px) saturate(150%);
+        -webkit-backdrop-filter: blur(40px) saturate(150%);
+        
+        /* Crisper Border */
+        border: 1px solid var(--glass-border);
+        
+        /* Deeper, more noticeable shadow for contrast/pop */
+        box-shadow: 
+          0 10px 40px -10px var(--shadow-color),
+          0 4px 12px -2px var(--shadow-color);
+          
+        color: var(--text-color);
+        transition: all 0.5s var(--ios-ease);
+        position: relative;
+        z-index: 1;
+      }
+
+      /* Specific adjustments for Dark Mode Bento to pop */
+      .theme-dark .glass-panel-adaptive {
+        box-shadow: 
+          inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
+          0 20px 50px -10px rgba(0, 0, 0, 0.6);
+      }
+
+      /* Book Card Border */
+      .book-card-border {
+         box-shadow: 0 12px 30px -8px var(--shadow-color);
+      }
+      
+      .theme-dark .book-card-border {
+         border: 1px solid rgba(255, 255, 255, 0.15);
+         box-shadow: 0 15px 40px -5px rgba(0,0,0,0.6);
+      }
+
+      /* PDF Text Layer Styles */
       .textLayer {
         position: absolute;
         text-align: initial;
@@ -52,7 +160,7 @@
         opacity: 0.2;
         line-height: 1.0;
         transform-origin: 0 0;
-        pointer-events: none; /* Allow clicks to pass through to canvas if needed, but text needs to be selectable */
+        pointer-events: none;
       }
       .textLayer span {
         color: transparent;
@@ -60,24 +168,39 @@
         white-space: pre;
         cursor: text;
         transform-origin: 0% 0%;
-        pointer-events: auto; /* Re-enable pointer events for text selection */
-      }
-      .textLayer ::selection {
-        background: rgba(0, 122, 255, 0.3);
-        color: transparent;
-      }
-      /* Smooth fade in animation */
-      @keyframes fadeIn {
-        from { opacity: 0; transform: scale(0.98); }
-        to { opacity: 1; transform: scale(1); }
-      }
-      .animate-fade-in {
-        animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        pointer-events: auto;
+        /* Inherit or explicitly set user-select for PDF text */
+        user-select: text;
+        -webkit-user-select: text;
       }
       ::selection {
-        background: #007AFF;
-        color: white;
+        background: rgba(0, 122, 255, 0.3);
+        color: inherit;
       }
+
+      /* Animations */
+      @keyframes slideUp {
+        from { transform: translateY(100%); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      @keyframes slideDown {
+        from { transform: translateY(-100%); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      @keyframes scaleIn {
+        from { transform: scale(0.92); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      .animate-slide-up { animation: slideUp 0.6s var(--ios-ease) forwards; }
+      .animate-slide-down { animation: slideDown 0.6s var(--ios-ease) forwards; }
+      .animate-scale-in { animation: scaleIn 0.5s var(--ios-ease) forwards; }
+      .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+      .delay-100 { animation-delay: 100ms; }
     </style>
   <script type="importmap">
 {

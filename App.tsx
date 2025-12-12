@@ -1,70 +1,71 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Library from './components/Library';
 import Reader from './components/Reader';
 import { Book, Bookmark, AppView } from './types';
 import { parseBook } from './services/bookParser';
 import { categorizeBook } from './services/geminiService';
-
-// Mock Data
-const MOCK_BOOKS: Book[] = [
-  {
-    id: '1',
-    title: 'The Great Gatsby',
-    author: 'F. Scott Fitzgerald',
-    content: `In my younger and more vulnerable years my father gave me some advice that I’ve been turning over in my mind ever since.
-
-“Whenever you feel like criticizing any one,” he told me, “just remember that all the people in this world haven’t had the advantages that you’ve had.”
-
-He didn’t say any more, but we’ve always been unusually communicative in a reserved way, and I understood that he meant a great deal more than that. In consequence, I’m inclined to reserve all judgments, a habit that has opened up many curious natures to me and also made me the victim of not a few veteran bores. The abnormal mind is quick to detect and attach itself to this quality when it appears in a normal person, and so it came about that in college I was unjustly accused of being a politician, because I was privy to the secret griefs of wild, unknown men. Most of the confidences were unsought — frequently I have feigned sleep, preoccupation, or a hostile levity when I realized by some unmistakable sign that an intimate revelation was quivering on the horizon.`,
-    coverColor: 'blue',
-    progress: 0,
-    lastRead: Date.now(),
-    type: 'text',
-    category: '小说'
-  },
-  {
-    id: '2',
-    title: 'Pride and Prejudice',
-    author: 'Jane Austen',
-    content: `It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.
-
-However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families, that he is considered the rightful property of some one or other of their daughters.
-
-"My dear Mr. Bennet," said his lady to him one day, "have you heard that Netherfield Park is let at last?"
-
-Mr. Bennet replied that he had not.
-
-"But it is," returned she; "for Mrs. Long has just been here, and she told me all about it."
-
-Mr. Bennet made no answer.
-
-"Do you not want to know who has taken it?" cried his wife impatiently.
-
-"You want to tell me, and I have no objection to hearing it."
-
-This was invitation enough.`,
-    coverColor: 'green',
-    progress: 45,
-    lastRead: Date.now() - 86400000,
-    type: 'text',
-    category: '经典'
-  }
-];
+import { 
+  initDB, 
+  loadBooksFromStorage, 
+  saveBookToStorage, 
+  loadBookmarksFromStorage, 
+  saveBookmarkToStorage, 
+  deleteBookmarkFromStorage,
+  updateBookProgressInDB
+} from './services/storageService';
 
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.LIBRARY);
-  const [books, setBooks] = useState<Book[]>(MOCK_BOOKS);
+  const [books, setBooks] = useState<Book[]>([]);
   const [activeBookId, setActiveBookId] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isOrganizing, setIsOrganizing] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'sepia' | 'dark' | 'eye-care'>('light');
+
+  // Debounce refs
+  const progressSaveTimeout = useRef<{[key: string]: any}>({});
+
+  // Initialize DB and load data
+  useEffect(() => {
+    const init = async () => {
+      try {
+        await initDB();
+        const [storedBooks, storedBookmarks] = await Promise.all([
+          loadBooksFromStorage(),
+          loadBookmarksFromStorage()
+        ]);
+        setBooks(storedBooks);
+        setBookmarks(storedBookmarks);
+        
+        // Load theme
+        const savedTheme = localStorage.getItem('lumina-theme');
+        if (savedTheme) setTheme(savedTheme as any);
+      } catch (e) {
+        console.error("Storage initialization failed", e);
+      } finally {
+        setIsReady(true);
+      }
+    };
+    init();
+  }, []);
+  
+  // Persist Theme
+  useEffect(() => {
+    localStorage.setItem('lumina-theme', theme);
+  }, [theme]);
 
   const activeBook = books.find(b => b.id === activeBookId);
 
   const handleSelectBook = (book: Book) => {
     setActiveBookId(book.id);
     setView(AppView.READER);
-    // Update last read timestamp
-    setBooks(prev => prev.map(b => b.id === book.id ? { ...b, lastRead: Date.now() } : b));
+    
+    // Update last read locally and in DB
+    const now = Date.now();
+    setBooks(prev => prev.map(b => b.id === book.id ? { ...b, lastRead: now } : b));
+    updateBookProgressInDB(book.id, book.progress, now);
   };
 
   const handleAddBook = async (file: File) => {
@@ -72,12 +73,8 @@ const App: React.FC = () => {
     try {
       const parsedBook = await parseBook(file);
       
-      // Get list of existing categories to reuse them if possible
-      // using Set to ensure uniqueness
-      const existingCategories = Array.from(new Set(books.map(b => b.category)));
-      
-      // AI Categorization with context
-      const category = await categorizeBook(parsedBook.title, parsedBook.author, existingCategories);
+      // Default to "未分类" (Uncategorized)
+      const category = "未分类";
 
       const newBook: Book = {
         id: Date.now().toString(),
@@ -93,7 +90,10 @@ const App: React.FC = () => {
         toc: parsedBook.toc,
       };
       
-      // Use functional state update to ensure we preserve previous books
+      // Save to IndexedDB first
+      await saveBookToStorage(newBook);
+      
+      // Then update State
       setBooks(prev => [newBook, ...prev]);
       
     } catch (error) {
@@ -104,33 +104,119 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateProgress = (bookId: string, progress: number) => {
-    setBooks(prev => prev.map(b => b.id === bookId ? { ...b, progress } : b));
+  const handleUpdateBook = async (updatedBook: Book) => {
+    // Optimistic Update
+    setBooks(prev => prev.map(b => b.id === updatedBook.id ? updatedBook : b));
+    // Persist
+    await saveBookToStorage(updatedBook);
   };
 
-  const handleAddBookmark = (bookId: string, excerpt: string, position: number) => {
+  const handleOrganizeLibrary = async () => {
+      setIsOrganizing(true);
+      const booksToOrganize = books.filter(b => b.category === "未分类");
+      
+      if (booksToOrganize.length === 0) {
+          alert("没有需要整理的“未分类”书籍。");
+          setIsOrganizing(false);
+          return;
+      }
+
+      // Collect existing categories to help AI avoid duplicates
+      const existingCategories = Array.from(new Set(books.filter(b => b.category !== "未分类").map(b => b.category)));
+      
+      let updatedCount = 0;
+      const newBooks = [...books];
+
+      for (const book of booksToOrganize) {
+          const newCategory = await categorizeBook(book.title, book.author, existingCategories);
+          if (newCategory !== "未分类") {
+               const index = newBooks.findIndex(b => b.id === book.id);
+               if (index !== -1) {
+                   newBooks[index] = { ...newBooks[index], category: newCategory };
+                   // Persist
+                   await saveBookToStorage(newBooks[index]);
+                   updatedCount++;
+               }
+          }
+      }
+
+      setBooks(newBooks);
+      setIsOrganizing(false);
+      if (updatedCount > 0) {
+          // Optional toast or feedback
+      }
+  };
+
+  const handleMoveBook = async (bookId: string, newCategory: string) => {
+      if (!newCategory) return;
+      
+      setBooks(prev => prev.map(book => {
+          if (book.id === bookId) {
+              const updated = { ...book, category: newCategory };
+              saveBookToStorage(updated); // Sync with DB
+              return updated;
+          }
+          return book;
+      }));
+  };
+
+  const handleUpdateProgress = (bookId: string, progress: number) => {
+    const now = Date.now();
+    
+    // 1. Immediate UI update
+    setBooks(prev => prev.map(b => b.id === bookId ? { ...b, progress, lastRead: now } : b));
+
+    // 2. Debounced DB update (prevent spamming IndexedDB on scroll)
+    if (progressSaveTimeout.current[bookId]) {
+      clearTimeout(progressSaveTimeout.current[bookId]);
+    }
+
+    progressSaveTimeout.current[bookId] = setTimeout(() => {
+       updateBookProgressInDB(bookId, progress, now);
+    }, 1000);
+  };
+
+  const handleAddBookmark = (bookId: string, excerpt: string, position: number, note?: string) => {
     const newBookmark: Bookmark = {
       id: Date.now().toString(),
       bookId,
       excerpt,
       position,
+      note,
       createdAt: Date.now(),
     };
+    
+    saveBookmarkToStorage(newBookmark);
     setBookmarks(prev => [...prev, newBookmark]);
   };
 
   const handleRemoveBookmark = (bookmarkId: string) => {
+    deleteBookmarkFromStorage(bookmarkId);
     setBookmarks(prev => prev.filter(b => b.id !== bookmarkId));
   };
 
+  if (!isReady) {
+     return (
+        <div className="h-screen w-full flex items-center justify-center bg-[#F2F2F7]">
+           <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+     );
+  }
+
   return (
-    <div className="antialiased text-gray-900 bg-white h-screen overflow-hidden relative">
+    <div className={`antialiased text-gray-900 bg-[var(--bg-color)] text-[var(--text-color)] h-screen overflow-hidden relative theme-${theme} transition-colors duration-500`}>
       {view === AppView.LIBRARY ? (
         <>
           <Library 
             books={books} 
             onSelectBook={handleSelectBook} 
             onAddBook={handleAddBook} 
+            onOrganizeLibrary={handleOrganizeLibrary}
+            onMoveBook={handleMoveBook}
+            onUpdateBook={handleUpdateBook}
+            isOrganizing={isOrganizing}
+            currentTheme={theme}
+            onThemeChange={setTheme}
           />
           {isProcessing && (
             <div className="absolute inset-0 bg-black/10 backdrop-blur-md flex items-center justify-center z-50 animate-fade-in">
@@ -139,7 +225,7 @@ const App: React.FC = () => {
                     <div className="absolute inset-0 border-4 border-blue-500/30 rounded-full"></div>
                     <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                  </div>
-                 <p className="text-sm font-semibold text-gray-700 tracking-wide">AI 正在整理书库...</p>
+                 <p className="text-sm font-semibold text-gray-700 tracking-wide">处理中...</p>
               </div>
             </div>
           )}
@@ -152,6 +238,8 @@ const App: React.FC = () => {
           onUpdateProgress={handleUpdateProgress}
           onAddBookmark={handleAddBookmark}
           onRemoveBookmark={handleRemoveBookmark}
+          theme={theme}
+          onThemeChange={setTheme}
         />
       ) : (
         <div className="flex items-center justify-center h-full">

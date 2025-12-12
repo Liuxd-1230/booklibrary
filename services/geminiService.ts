@@ -4,7 +4,7 @@ import { AIProvider } from "../types";
 // Default configuration
 const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-chat';
-const DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1/chat/completions';
+const DEEPSEEK_BASE_URL = 'https://api.deepseek.com/chat/completions';
 
 interface AIConfig {
   provider: AIProvider;
